@@ -1,0 +1,35 @@
+# /etc/nginx/sites-available/app  (symlink into sites-enabled)
+# Serves the Laravel app from the "current" release symlink.
+
+server {
+    listen 80;
+    server_name example.com www.example.com;
+
+    # Let Certbot handle HTTPS:  sudo certbot --nginx -d example.com -d www.example.com
+    root /var/www/app/current/public;
+    index index.php;
+
+    add_header X-Frame-Options "SAMEORIGIN" always;
+    add_header X-Content-Type-Options "nosniff" always;
+
+    location / {
+        try_files $uri $uri/ /index.php?$query_string;
+    }
+
+    location ~ \.php$ {
+        include snippets/fastcgi-php.conf;
+        fastcgi_pass unix:/run/php/php8.3-fpm.sock;
+
+        # Use the resolved path, not the symlink. Without this, PHP-FPM/OPcache
+        # can keep serving the OLD release after the "current" symlink changes.
+        fastcgi_param SCRIPT_FILENAME $realpath_root$fastcgi_script_name;
+        fastcgi_param DOCUMENT_ROOT   $realpath_root;
+    }
+
+    # Never serve dotfiles (.env, .git, ...) except ACME challenges.
+    location ~ /\.(?!well-known).* {
+        deny all;
+    }
+
+    client_max_body_size 20M;
+}

@@ -1,0 +1,96 @@
+# Copy this file to .github/workflows/deploy.yml in your Laravel project.
+name: Deploy to production
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# Never run two production deploys at once, and never cancel one mid-flight.
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+env:
+  PHP_VERSION: "8.3"
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ env.PHP_VERSION }}
+          extensions: mbstring, xml, ctype, json, pdo_mysql, pdo_sqlite, bcmath
+          coverage: none
+
+      - name: Cache Composer downloads
+        uses: actions/cache@v4
+        with:
+          path: ~/.composer/cache
+          key: composer-${{ hashFiles('composer.lock') }}
+          restore-keys: composer-
+
+      - run: composer install --prefer-dist --no-progress
+      - run: cp .env.example .env && php artisan key:generate
+      - run: php artisan test
+
+  deploy:
+    needs: test
+    runs-on: ubuntu-latest
+    environment: production # lets you require manual approval in repo settings
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ env.PHP_VERSION }}
+          extensions: mbstring, xml, ctype, json, pdo_mysql, bcmath
+          coverage: none
+
+      - name: Install production dependencies
+        run: composer install --no-dev --prefer-dist --optimize-autoloader --no-progress
+
+      - name: Build frontend assets
+        if: ${{ hashFiles('package.json') != '' }}
+        run: |
+          npm ci
+          npm run build
+
+      - name: Package release
+        run: |
+          tar -czf "$RUNNER_TEMP/release.tar.gz" \
+            --exclude=.git --exclude=.github --exclude=node_modules \
+            --exclude=tests --exclude=.env .
+
+      - name: Configure SSH
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > ~/.ssh/known_hosts
+
+      - name: Upload release and deploy script
+        env:
+          TARGET: ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}
+        run: |
+          RELEASE_ID="$(date +%Y%m%d%H%M%S)-${GITHUB_SHA::7}"
+          echo "RELEASE_ID=$RELEASE_ID" >> "$GITHUB_ENV"
+          scp -i ~/.ssh/deploy_key "$RUNNER_TEMP/release.tar.gz" "$TARGET:/tmp/$RELEASE_ID.tar.gz"
+          scp -i ~/.ssh/deploy_key scripts/deploy.sh "$TARGET:/tmp/deploy-$RELEASE_ID.sh"
+
+      - name: Run deploy on server
+        env:
+          TARGET: ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}
+          APP_DIR: ${{ vars.APP_DIR || '/var/www/app' }}
+          HEALTHCHECK_URL: ${{ vars.HEALTHCHECK_URL }}
+        run: |
+          ssh -i ~/.ssh/deploy_key "$TARGET" \
+            "APP_DIR='$APP_DIR' HEALTHCHECK_URL='$HEALTHCHECK_URL' \
+             bash /tmp/deploy-$RELEASE_ID.sh '$RELEASE_ID' '/tmp/$RELEASE_ID.tar.gz'; \
+             status=\$?; rm -f /tmp/deploy-$RELEASE_ID.sh; exit \$status"
