@@ -10,6 +10,8 @@ automatically if the check fails.
 It is deliberately plain: Bash, Nginx, PHP-FPM and one workflow file. No
 agents, no extra services, nothing to learn before you can read what it does.
 
+![Request path and delivery path for a Laravel app on a single AWS server](docs/architecture.png)
+
 ## What you get
 
 | Path | Purpose |
