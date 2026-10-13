@@ -1,4 +1,5 @@
 # Architecture
+   ![Request path and delivery path](architecture.png)
 
 ## Request path
 
